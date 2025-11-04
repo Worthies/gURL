@@ -1,0 +1,162 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # Run at 2:00 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: linux
+            arch: arm
+            runner: ubuntu-latest
+            goos: linux
+            goarch: arm
+          
+          # macOS builds
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
+          
+          # Windows builds
+          - os: windows
+            arch: amd64
+            runner: ubuntu-latest
+            goos: windows
+            goarch: amd64
+          - os: windows
+            arch: arm64
+            runner: ubuntu-latest
+            goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Get dependencies
+        run: go mod download
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            go build -o gurl-${{ matrix.os }}-${{ matrix.arch }}.exe ./cmd/gurl
+          else
+            go build -o gurl-${{ matrix.os }}-${{ matrix.arch }} ./cmd/gurl
+          fi
+
+      - name: Create tarball (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          tar -czf gurl-${{ matrix.os }}-${{ matrix.arch }}.tar.gz gurl-${{ matrix.os }}-${{ matrix.arch }}
+          sha256sum gurl-${{ matrix.os }}-${{ matrix.arch }}.tar.gz > gurl-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Create zip (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          zip gurl-${{ matrix.os }}-${{ matrix.arch }}.zip gurl-${{ matrix.os }}-${{ matrix.arch }}.exe
+          sha256sum gurl-${{ matrix.os }}-${{ matrix.arch }}.zip > gurl-${{ matrix.os }}-${{ matrix.arch }}.zip.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gurl-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            gurl-${{ matrix.os }}-${{ matrix.arch }}*
+          retention-days: 7
+
+  release:
+    name: Create Nightly Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -lah release/
+
+      - name: Delete existing nightly release
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --repo ${{ github.repository }} --yes || true
+          git push --delete origin nightly || true
+
+      - name: Create nightly release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly
+          name: "Nightly Build ($(date +'%Y-%m-%d'))"
+          body: |
+            # Nightly Build
+            
+            Automated nightly build from the latest master branch.
+            
+            **Build Date:** $(date +'%Y-%m-%d %H:%M:%S UTC')
+            **Commit:** ${{ github.sha }}
+            
+            ## Supported Platforms
+            
+            - **Linux:** amd64, arm64, arm
+            - **macOS:** amd64 (Intel), arm64 (Apple Silicon)
+            - **Windows:** amd64, arm64
+            
+            ## Installation
+            
+            Download the appropriate binary for your platform, extract it, and add it to your PATH.
+            
+            ### Verify checksums
+            ```bash
+            sha256sum -c gurl-<platform>-<arch>.tar.gz.sha256
+            ```
+            
+            **Note:** This is a development build and may contain bugs. For stable releases, please use the official release tags.
+          draft: false
+          prerelease: true
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

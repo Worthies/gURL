@@ -1,6 +1,8 @@
-// Command grpcurl makes gRPC requests (a la cURL, but HTTP/2). It can use a supplied descriptor
-// file, protobuf sources, or service reflection to translate JSON or text request data into the
-// appropriate protobuf messages and vice versa for presenting the response contents.
+// Command gurl makes both gRPC and HTTP/HTTPS requests. In standard mode, it operates like
+// grpcurl - making gRPC requests with JSON/text input. With --curl mode, it acts as a
+// standard HTTP client (like curl). It can use a supplied descriptor file, protobuf sources,
+// or service reflection to translate JSON or text request data into the appropriate protobuf
+// messages and vice versa for presenting the response contents.
 package main
 
 import (
@@ -174,6 +176,52 @@ var (
 		permitted if they are both set to the same value, to increase backwards
 		compatibility with earlier releases that allowed both to be set).`))
 	reflection = optionalBoolFlag{val: true}
+	curlMode   = flags.Bool("curl", false, prettify(`
+		Act as curl (HTTP/HTTPS client mode). When set, gurl makes standard
+		HTTP/HTTPS requests instead of gRPC requests. This switches the tool
+		from gRPC mode to HTTP mode, allowing it to work with regular REST APIs
+		and web servers.`))
+
+	// HTTP mode flags (only used with --curl)
+	httpMethod = flags.String("X", "", prettify(`
+		Specify HTTP request method to use (GET, POST, PUT, DELETE, etc.).
+		Only used in HTTP mode (--curl flag). Defaults to GET, or POST if -d is used.`))
+	includeHeaders = flags.Bool("i", false, prettify(`
+		Include HTTP response headers in the output. Only used in HTTP mode (--curl flag).`))
+	outputFile = flags.String("o", "", prettify(`
+		Write output to file instead of stdout. Only used in HTTP mode (--curl flag).`))
+	silent = flags.Bool("s", false, prettify(`
+		Silent mode. Don't show progress or errors. Only used in HTTP mode (--curl flag).`))
+	followRedirects = flags.Bool("L", false, prettify(`
+		Follow HTTP redirects. Only used in HTTP mode (--curl flag).`))
+	maxRedirs = flags.Int("max-redirs", 50, prettify(`
+		Maximum number of redirects to follow. Only used in HTTP mode (--curl flag).`))
+	referer = flags.String("e", "", prettify(`
+		Set Referer header. Only used in HTTP mode (--curl flag).`))
+	compressed = flags.Bool("compressed", false, prettify(`
+		Request compressed response. Only used in HTTP mode (--curl flag).`))
+	failOnError = flags.Bool("f", false, prettify(`
+		Fail silently on HTTP errors. Only used in HTTP mode (--curl flag).`))
+	headOnly = flags.Bool("I", false, prettify(`
+		Fetch headers only (HEAD request). Only used in HTTP mode (--curl flag).`))
+	uploadFile = flags.String("T", "", prettify(`
+		Upload file via PUT. Only used in HTTP mode (--curl flag).`))
+	rangeHeader = flags.String("r", "", prettify(`
+		Retrieve only specified byte range. Only used in HTTP mode (--curl flag).`))
+	cookie = flags.String("b", "", prettify(`
+		Send cookies from string/file. Only used in HTTP mode (--curl flag).`))
+	cookieJar = flags.String("c", "", prettify(`
+		Write cookies to file. Only used in HTTP mode (--curl flag).`))
+	httpProxy = flags.String("x", "", prettify(`
+		Use this proxy. Only used in HTTP mode (--curl flag).`))
+	noProxy = flags.String("noproxy", "", prettify(`
+		List of hosts to not use proxy for. Only used in HTTP mode (--curl flag).`))
+	locationTrusted = flags.Bool("location-trusted", false, prettify(`
+		Like -L, but send auth to other hosts. Only used in HTTP mode (--curl flag).`))
+	ipv4Only = flags.Bool("4", false, prettify(`
+		Resolve names to IPv4 addresses only. Only used in HTTP mode (--curl flag).`))
+	ipv6Only = flags.Bool("6", false, prettify(`
+		Resolve names to IPv6 addresses only. Only used in HTTP mode (--curl flag).`))
 )
 
 func init() {
@@ -314,6 +362,14 @@ func (d *timingData) Done() {
 
 func main() {
 	flags.Usage = usage
+
+	// If the user requested curl mode (via presence of --curl
+	// on the original command line), preprocess os.Args to translate common
+	// curl-style options into the equivalent gurl flags before parsing.
+	if hasCurlModeToken(os.Args) {
+		os.Args = preprocessCurlArgs(os.Args)
+	}
+
 	flags.Parse(os.Args[1:])
 	if *help {
 		usage()
@@ -322,6 +378,12 @@ func main() {
 	if *printVersion {
 		fmt.Fprintf(os.Stderr, "%s %s\n", filepath.Base(os.Args[0]), version)
 		os.Exit(0)
+	}
+
+	// If curl mode is enabled, execute HTTP request instead of gRPC
+	if *curlMode {
+		executeCurlModeFromFlags()
+		return
 	}
 
 	// default behavior is to use tls
@@ -888,6 +950,352 @@ path to the domain socket.
 Available flags:
 `, os.Args[0])
 	flags.PrintDefaults()
+}
+
+// hasCurlModeToken returns true if the original argv contains a token
+// indicating that curl mode (HTTP mode) should be enabled.
+func hasCurlModeToken(argv []string) bool {
+	for _, a := range argv {
+		if a == "--curl" || a == "-curl" {
+			return true
+		}
+	}
+	return false
+}
+
+// preprocessCurlArgs rewrites common curl-style flags into the equivalent
+// gurl flags so that the existing flag parsing can handle them. It is
+// invoked only when curl mode (HTTP mode) is requested.
+func preprocessCurlArgs(argv []string) []string {
+	if len(argv) == 0 {
+		return argv
+	}
+	out := []string{argv[0]}
+	var collectedPositionals []string
+	var unixSocketPath string
+
+	for i := 1; i < len(argv); i++ {
+		tok := argv[i]
+
+		// Handle combined short flags like -kv (split into -k -v)
+		if strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && len(tok) > 2 && !strings.Contains(tok, "=") {
+			// Check if it's a single letter option that takes a value
+			if tok[1] == 'H' || tok[1] == 'd' || tok[1] == 'E' || tok[1] == 'u' || tok[1] == 'A' || tok[1] == 'x' || tok[1] == 'm' || tok[1] == 'K' || tok[1] == 'X' || tok[1] == 'o' {
+				// This is a short option with value, don't split
+			} else {
+				// Split combined flags: -kv -> -k -v, -Cv -> -C -v
+				for j := 1; j < len(tok); j++ {
+					switch tok[j] {
+					case 'C':
+						out = append(out, "-C")
+					case 'k':
+						out = append(out, "-insecure")
+					case 'v':
+						out = append(out, "-v")
+					case 's':
+						out = append(out, "-s")
+					case 'i':
+						out = append(out, "-i")
+					}
+				}
+				continue
+			}
+		}
+
+		switch tok {
+		case "--curl", "-curl":
+			out = append(out, "-curl")
+
+		// Header options
+		case "--header", "--Header", "-header":
+			out = append(out, "-H")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-H":
+			out = append(out, "-H")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+
+		// Data/body options
+		case "--data", "--data-raw", "--data-binary", "--data-ascii", "-data":
+			out = append(out, "-d")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-d":
+			out = append(out, "-d")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+
+		// TLS/Security options
+		case "--insecure", "-insecure":
+			out = append(out, "-insecure")
+		case "-k":
+			out = append(out, "-insecure")
+		case "--cacert":
+			out = append(out, "-cacert")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "--cert", "-cert":
+			out = append(out, "-cert")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-E":
+			// -E cert[:password] format - grpcurl doesn't support password in cert arg
+			out = append(out, "-cert")
+			if i+1 < len(argv) {
+				i++
+				certArg := argv[i]
+				// Strip password if present
+				if idx := strings.Index(certArg, ":"); idx != -1 {
+					certArg = certArg[:idx]
+				}
+				out = append(out, certArg)
+			}
+		case "--key":
+			out = append(out, "-key")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+
+		// Connection/timing options
+		case "--connect-timeout":
+			out = append(out, "-connect-timeout")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "--max-time", "-max-time":
+			out = append(out, "-max-time")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-m":
+			out = append(out, "-max-time")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "--keepalive-time":
+			out = append(out, "-keepalive-time")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+
+		// Unix socket
+		case "--unix-socket":
+			if i+1 < len(argv) {
+				i++
+				unixSocketPath = argv[i]
+				out = append(out, "-unix")
+			}
+		case "--abstract-unix-socket":
+			// Treat same as --unix-socket
+			if i+1 < len(argv) {
+				i++
+				unixSocketPath = argv[i]
+				out = append(out, "-unix")
+			}
+
+		// User-Agent
+		case "--user-agent", "-user-agent":
+			out = append(out, "-user-agent")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-A":
+			out = append(out, "-user-agent")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+
+		// User authentication (convert to header)
+		case "--user", "-user":
+			if i+1 < len(argv) {
+				i++
+				// Convert user:pass to Authorization header (Basic auth)
+				userPass := argv[i]
+				out = append(out, "-H", "Authorization: Basic "+userPass)
+			}
+		case "-u":
+			if i+1 < len(argv) {
+				i++
+				userPass := argv[i]
+				out = append(out, "-H", "Authorization: Basic "+userPass)
+			}
+
+		// Verbose and help
+		case "--verbose":
+			out = append(out, "-v")
+		case "-v":
+			out = append(out, "-v")
+		case "--help":
+			out = append(out, "-help")
+		case "-h":
+			out = append(out, "-help")
+		case "--version":
+			out = append(out, "-version")
+		case "-V":
+			out = append(out, "-version")
+
+		// Config file
+		case "--config", "-config":
+			if i+1 < len(argv) {
+				i++
+				// grpcurl doesn't have config file support, skip
+				warn("Config file option -K/--config is not supported in curl-compat mode")
+			}
+		case "-K":
+			if i+1 < len(argv) {
+				i++
+				warn("Config file option -K/--config is not supported in curl-compat mode")
+			}
+
+		// Silent/quiet modes
+		case "--silent", "-silent":
+			out = append(out, "-s")
+		case "-s":
+			out = append(out, "-s")
+		case "--show-error", "-show-error", "-S":
+			// No-op for grpcurl
+
+		// HTTP request method
+		case "--request", "-request":
+			out = append(out, "-X")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-X":
+			out = append(out, "-X")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "--get", "-G":
+			out = append(out, "-X", "GET")
+		case "--head", "-I":
+			out = append(out, "-X", "HEAD")
+
+		// Output options
+		case "--output":
+			out = append(out, "-o")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "-o":
+			out = append(out, "-o")
+			if i+1 < len(argv) {
+				i++
+				out = append(out, argv[i])
+			}
+		case "--include":
+			out = append(out, "-i")
+		case "-i":
+			out = append(out, "-i")
+
+		// Options that don't apply to gRPC or are not supported
+		case "--compressed", "--location", "-L", "--max-redirs",
+			"--referer", "-e", "--cookie", "-b", "--cookie-jar", "-c",
+			"--remote-name", "-O", "--upload-file", "-T",
+			"--form", "-F",
+			"--dump-header", "-D",
+			"--ipv4", "-4", "--ipv6", "-6",
+			"--retry", "--retry-delay", "--retry-max-time",
+			"--limit-rate", "--max-filesize", "--range", "-r",
+			"--http1.0", "-0", "--http1.1", "--http2", "--http2-prior-knowledge",
+			"--no-buffer", "-N", "--no-keepalive", "--tcp-nodelay",
+			"--resolve", "--interface", "--local-port",
+			"--oauth2-bearer", "--proxy-user", "-U",
+			"--trace", "--trace-ascii", "--trace-time",
+			"--proxy", "-x", "--noproxy":
+			// Skip these with a value if they take one
+			if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+				// Check if this option takes a value
+				takesValue := true
+				switch tok {
+				case "--compressed", "--location", "-L", "--get", "-G",
+					"--head", "-I", "--no-buffer", "-N", "--no-keepalive",
+					"--tcp-nodelay", "-4", "-6", "--http1.0", "-0",
+					"--http1.1", "--http2", "--http2-prior-knowledge",
+					"--include", "-i":
+					takesValue = false
+				}
+				if takesValue {
+					i++ // skip the value
+				}
+			}
+
+		// URL (positional argument that might start with http/https)
+		case "--url":
+			if i+1 < len(argv) {
+				i++
+				// In curl-compat mode, keep the full URL
+				url := argv[i]
+				collectedPositionals = append(collectedPositionals, url)
+			}
+
+		default:
+			// Check if it's a URL-like positional argument
+			if strings.HasPrefix(tok, "http://") || strings.HasPrefix(tok, "https://") {
+				// In curl-compat mode, keep the full URL
+				collectedPositionals = append(collectedPositionals, tok)
+			} else {
+				out = append(out, tok)
+			}
+		}
+	}
+
+	// If we have a unix socket path, add it as positional if no other address
+	if unixSocketPath != "" {
+		collectedPositionals = append([]string{unixSocketPath}, collectedPositionals...)
+	}
+
+	// Append collected positional arguments (URLs)
+	// In curl-compat mode, always append URLs
+	if len(collectedPositionals) > 0 {
+		out = append(out, collectedPositionals...)
+	}
+
+	return out
+}
+
+// extractAddressFromURL attempts to extract a host:port address from a URL.
+// Returns empty string if extraction fails or URL is invalid.
+func extractAddressFromURL(url string) string {
+	// Remove protocol prefix
+	url = strings.TrimPrefix(url, "http://")
+	url = strings.TrimPrefix(url, "https://")
+	url = strings.TrimPrefix(url, "grpc://")
+
+	// Find the end of the host:port part (before path, query, or fragment)
+	if idx := strings.IndexAny(url, "/?#"); idx != -1 {
+		url = url[:idx]
+	}
+
+	// If no port specified and it was https, add :443
+	if !strings.Contains(url, ":") {
+		return url + ":443"
+	}
+
+	return url
 }
 
 func prettify(docString string) string {

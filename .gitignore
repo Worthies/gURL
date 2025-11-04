@@ -3,3 +3,6 @@ dist/
 VERSION
 .tmp/
 *.snap
+**/gurl
+**/grpcurl
+curl-help.txt
