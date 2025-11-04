@@ -33,7 +33,7 @@ import (
 	// Register xds so xds and xds-experimental resolver schemes work
 	_ "google.golang.org/grpc/xds"
 
-	"github.com/fullstorydev/grpcurl"
+	"github.com/worthies/gurl"
 )
 
 // To avoid confusion between program error codes and the gRPC response
@@ -550,7 +550,7 @@ func main() {
 			// prepend unix:// to the address if it's not already there
 			// this is to maintain backwards compatibility because the custom dialer is replaced by
 			// the default dialer in grpc-go.
-			// https://github.com/fullstorydev/grpcurl/pull/480
+			// https://github.com/worthies/gurl/pull/480
 			target = "unix://" + target
 		}
 		var creds credentials.TransportCredentials

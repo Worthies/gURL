@@ -1,4 +1,4 @@
-module github.com/fullstorydev/grpcurl
+module github.com/worthies/gurl
 
 go 1.23.0
 

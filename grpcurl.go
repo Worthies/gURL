@@ -658,7 +658,7 @@ func BlockingDial(ctx context.Context, network, address string, creds credential
 			// prepend unix:// to the address if it's not already there
 			// this is to maintain backwards compatibility because the custom dialer is replaced by
 			// the default dialer in grpc-go.
-			// https://github.com/fullstorydev/grpcurl/pull/480
+			// https://github.com/worthies/gurl/pull/480
 			address = "unix://" + address
 		}
 	default:
