@@ -35,7 +35,7 @@ parts:
   grpcurl:
     plugin: go
     build-snaps: [go/latest/stable]
-    source: https://github.com/fullstorydev/grpcurl
+    source: https://github.com/worthies/gurl
     source-type: git
     override-build: |
       tag="$(git describe --tags --abbrev=0)"

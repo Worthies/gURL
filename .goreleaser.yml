@@ -53,7 +53,7 @@ archives:
 
 nfpms:
   - vendor: Fullstory
-    homepage: https://github.com/fullstorydev/grpcurl/
+    homepage: https://github.com/worthies/gurl/
     maintainer: Engineering at Fullstory  <fixme@fixme>
     description: 'Like cURL, but for gRPC: Command-line tool for interacting with gRPC servers'
     license: MIT
