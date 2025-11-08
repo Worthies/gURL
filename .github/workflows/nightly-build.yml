@@ -81,17 +81,15 @@ jobs:
             go build -o gurl-${{ matrix.os }}-${{ matrix.arch }} ./cmd/gurl
           fi
 
-      - name: Create tarball (Unix)
+      - name: Create digest (Unix)
         if: matrix.os != 'windows'
         run: |
-          tar -czf gurl-${{ matrix.os }}-${{ matrix.arch }}.tar.gz gurl-${{ matrix.os }}-${{ matrix.arch }}
-          sha256sum gurl-${{ matrix.os }}-${{ matrix.arch }}.tar.gz > gurl-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.sha256
+          sha256sum gurl-${{ matrix.os }}-${{ matrix.arch }} > gurl-${{ matrix.os }}-${{ matrix.arch }}.sha256
 
-      - name: Create zip (Windows)
+      - name: Create digest (Windows)
         if: matrix.os == 'windows'
         run: |
-          zip gurl-${{ matrix.os }}-${{ matrix.arch }}.zip gurl-${{ matrix.os }}-${{ matrix.arch }}.exe
-          sha256sum gurl-${{ matrix.os }}-${{ matrix.arch }}.zip > gurl-${{ matrix.os }}-${{ matrix.arch }}.zip.sha256
+          sha256sum gurl-${{ matrix.os }}-${{ matrix.arch }} > gurl-${{ matrix.os }}-${{ matrix.arch }}.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
